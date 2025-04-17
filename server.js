@@ -3,9 +3,16 @@ const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
 const GitLabStrategy = require('passport-gitlab2').Strategy;
+const BitbucketStrategy = require('passport-bitbucket-oauth2').Strategy;
 const path = require('path');
+const cors = require('cors');
 
 const app = express();
+
+app.use(cors({
+  origin: 'http://localhost:3000', // your frontend URL
+  credentials: true, // allow cookies
+}));
 
 // Middleware
 app.use(express.json());
@@ -26,27 +33,42 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Passport GitLab Strategy
-passport.use(new GitLabStrategy({
+passport.use('gitlab', new GitLabStrategy({
   clientID: process.env.GITLAB_CLIENT_ID,
   clientSecret: process.env.GITLAB_CLIENT_SECRET,
   callbackURL: process.env.GITLAB_CALLBACK_URL,
 },
-(accessToken, refreshToken, profile, done) => {
-  // Simple user transformation
+(gitlabAccessToken, refreshToken, profile, done) => {
   const user = {
+    provider: 'gitlab',
     id: profile.id,
     username: profile.username,
     displayName: profile.displayName || profile.username,
     email: profile.emails?.[0]?.value,
     profileUrl: profile.profileUrl,
-    provider: profile.provider,
-    accessToken: accessToken
+    accessToken: gitlabAccessToken
   };
   return done(null, user);
 }));
 
-// Passport serialization
+passport.use('bitbucket', new BitbucketStrategy({
+  clientID: process.env.BITBUCKET_CLIENT_ID,
+  clientSecret: process.env.BITBUCKET_CLIENT_SECRET,
+  callbackURL: process.env.BITBUCKET_CALLBACK_URL,
+},
+(bitbucketAccessToken, refreshToken, profile, done) => {
+  const user = {
+    provider: 'bitbucket',
+    id: profile.id,
+    username: profile.username,
+    displayName: profile.displayName || profile.username,
+    email: profile.email || (profile.emails && profile.emails[0] && profile.emails[0].value),
+    profileUrl: `https://bitbucket.org/${profile.username}/`,
+    accessToken: bitbucketAccessToken
+  };
+  return done(null, user);
+}));
+
 passport.serializeUser((user, done) => {
   done(null, user);
 });
@@ -60,62 +82,50 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.get('/auth/gitlab', passport.authenticate('gitlab'));
 
-app.get('/oauth/callback',
-  passport.authenticate('gitlab', { 
-    failureRedirect: '/',
-    failureFlash: true 
-  }),
-  (req, res) => {
-    res.redirect('/profile');
-  }
+app.get('/auth/gitlab', passport.authenticate('gitlab'));
+app.get('/oauth/gitlab/callback',
+  passport.authenticate('gitlab', { failureRedirect: '/' }),
+  (req, res) => res.redirect('/profile')
+);
+
+app.get('/auth/bitbucket', passport.authenticate('bitbucket'));
+app.get('/oauth/bitbucket/callback',
+  passport.authenticate('bitbucket', { failureRedirect: '/' }),
+  (req, res) => res.redirect('/profile')
 );
 
 app.get('/profile', (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.redirect('/');
-  }
+  if (!req.isAuthenticated()) return res.redirect('/');
   res.sendFile(path.join(__dirname, 'public', 'profile.html'));
 });
 
 app.get('/user-data', (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!req.isAuthenticated()) return res.status(401).json({ error: 'Not authenticated' });
   
   const user = req.user;
   res.json({
+    provider: user.provider,
     id: user.id,
     displayName: user.displayName,
     username: user.username,
-    email: user.emails?.[0]?.value,
-    profileUrl: user.profileUrl,
-    provider: user.provider
+    email: user.email,
+    profileUrl: user.profileUrl
   });
 });
 
 app.get('/logout', (req, res) => {
   req.logout((err) => {
-    if (err) {
-      return res.status(500).send('Failed to logout');
-    }
+    if (err) return res.status(500).send('Failed to logout');
     res.redirect('/');
   });
 });
 
-// Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Something broke!');
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`GitLab OAuth configured with callback: ${process.env.GITLAB_CALLBACK_URL}`);
+  console.log(`GitLab callback: ${process.env.GITLAB_CALLBACK_URL}`);
+  console.log(`Bitbucket callback: ${process.env.BITBUCKET_CALLBACK_URL}`);
 });
